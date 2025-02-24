@@ -1,0 +1,1 @@
+curl --location --request GET 'https://algoliabycarlos--siman.myvtex.com/_v/catalog/3905962' --header 'Cookie: janus_sid=7dec2dbc-293c-454c-a1cf-a807299ab175'

@@ -3,7 +3,7 @@ import csv
 
 # Definir rutas en base a la estructura del proyecto
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Directorio del script actual
-TXT_FILE_PATH = os.path.join(BASE_DIR, "data", "skus.txt")  # Ruta del archivo TXT
+TXT_FILE_PATH = os.path.join(BASE_DIR,   "data", "skus.txt")  # Ruta del archivo TXT
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")  # Carpeta de salida
 CSV_FILE_PATH = os.path.join(OUTPUT_DIR, "output.csv")  # Ruta del archivo CSV
 

@@ -1,0 +1,23 @@
+# Entorno virtual
+venv/
+.env
+
+# Dependencias
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos de configuración y secretos
+config.json
+*.log
+*.db
+.DS_Store
+
+
+# Archivos de salida
+output/
+*.xlsx
+*.csv
+*.xls
+

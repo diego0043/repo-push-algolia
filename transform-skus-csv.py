@@ -20,6 +20,9 @@ COOKIE_HEADER = "janus_sid=7dec2dbc-293c-454c-a1cf-a807299ab175"
 with open(TXT_FILE_PATH, "r", encoding="utf-8") as file:
     skus = [line.strip() for line in file.readlines() if line.strip()]
 
+print(f"ℹ️ Se encontraron {len(skus)} SKUs en el archivo TXT")
+skus = set(skus)  # Eliminar duplicados
+
 # Crear el archivo CSV con la estructura esperada
 with open(CSV_FILE_PATH, mode="w", newline="", encoding="utf-8") as csvfile:
     writer = csv.writer(csvfile)

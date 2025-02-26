@@ -1,114 +1,120 @@
 import os
-import csv
-import aiohttp
+import pandas as pd
 import asyncio
+import aiohttp
 import logging
 from datetime import datetime
-import re
 import sys
 
-# Asegurar que la salida en Windows use UTF-8
-sys.stdout.reconfigure(encoding='utf-8')
+# Forzar UTF-8 para evitar errores con emojis
+sys.stdout.reconfigure(encoding="utf-8")
 
-# Definir rutas en base a la estructura del proyecto
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Directorio del script actual
-CSV_FILE_PATH = os.path.join(BASE_DIR, "output", "output.csv")  # Ruta del CSV generado
-LOGS_DIR = os.path.join(BASE_DIR, "logs")  # Carpeta para logs
-RESULTS_CSV_PATH = os.path.join(LOGS_DIR, "resultados.csv")  # Archivo para guardar respuestas
+# 📂 Definir Directorios
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DOCS_DIR = os.path.join(BASE_DIR, "docs")
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
 
-# Crear carpeta 'logs' si no existe
+# 📌 Crear carpetas si no existen
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# Nombre del archivo de log con fecha y hora
+# 📌 Configuración de logging
 log_filename = os.path.join(LOGS_DIR, datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log")
-
-# Configuración de logging con UTF-8
 logging.basicConfig(
     filename=log_filename,
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    encoding="utf-8"  # 🔥 Evita errores de codificación en Windows/Linux
+    encoding="utf-8"
 )
 
-# Control de concurrencia para evitar bloqueos
-CONCURRENT_REQUESTS = 10  # Reducido para evitar bloqueos
+# 📌 Parámetros de Procesamiento
+BATCH_SIZE = 8000  # Máximo 8,000 registros por archivo
+CONCURRENT_REQUESTS = 10  # Limitar concurrencia para no sobrecargar
 semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
-def extract_url_and_header(curl_command):
-    """Extrae la URL y el header 'Cookie' de un comando curl."""
-    url_match = re.search(r"https?://[^\s']+", curl_command)
-    header_match = re.search(r"Cookie:\s?([^\s']+)", curl_command)
+# 📌 Configuración del cURL
+BASE_URL = "https://algoliabycarlos--siman.myvtex.com/_v/catalog/"
+COOKIE_HEADER = "janus_sid=7dec2dbc-293c-454c-a1cf-a807299ab175"
 
-    url = url_match.group(0) if url_match else None
-    cookie = header_match.group(1) if header_match else None
+### 🔥 1️⃣ UNIR ARCHIVOS Y GENERAR SOLO CURLs ###
+print("📥 Leyendo archivos de `docs/`...")
 
-    if not url or not cookie:
-        return None, None  # Indicar que hay un error
+# Leer todos los archivos XLS en `docs/`
+xls_files = [os.path.join(DOCS_DIR, f) for f in os.listdir(DOCS_DIR) if f.endswith(".xls")]
+df_list = [pd.read_excel(f) for f in xls_files]
 
-    return url, {"Cookie": cookie}
+# Unir todos los archivos en un solo DataFrame
+df = pd.concat(df_list, ignore_index=True)
 
-async def fetch(session, curl_command, line_number):
-    """Ejecuta una petición HTTP basada en el comando cURL del CSV."""
-    async with semaphore:  # Limita la concurrencia
+# Eliminar duplicados basado en la columna "T" (SKU)
+df = df.drop_duplicates(subset=["T"])
+
+# Generar SOLO la lista de cURLs
+df["curl"] = df["T"].apply(lambda sku: f"curl --location --request GET '{BASE_URL}{sku}' --header 'Cookie: {COOKIE_HEADER}'")
+
+print(f"✅ Procesados {len(df)} SKUs únicos.")
+
+# Dividir en archivos de 8,000 registros
+num_batches = (len(df) // BATCH_SIZE) + 1
+batch_files = []
+
+for i in range(num_batches):
+    batch_df = df.iloc[i * BATCH_SIZE : (i + 1) * BATCH_SIZE]
+    if not batch_df.empty:
+        file_name = os.path.join(OUTPUT_DIR, f"parte_{i+1}.txt")
+        batch_df["curl"].to_csv(file_name, index=False, header=False)  # Solo guarda los cURLs en TXT
+        batch_files.append(file_name)
+        print(f"✅ Archivo guardado: {file_name}")
+
+print("\n✅ Todos los archivos han sido generados y están listos para procesar.")
+
+### 🔥 2️⃣ PROCESAR ARCHIVOS EN LOTES DE 2 EN 2 ###
+
+async def fetch(session, url, line_number):
+    """Ejecuta una petición HTTP basada en la URL."""
+    async with semaphore:
         try:
-            url, headers = extract_url_and_header(curl_command)
-
-            if not url or not headers:
-                logging.error(f"Línea {line_number}: Error ❌ Comando inválido -> {curl_command}")
-                print(f"Línea {line_number}: [ERROR] Comando inválido -> {curl_command}")
-                return None
-
-            async with session.get(url, headers=headers, timeout=15) as response:
+            async with session.get(url, timeout=10) as response:
                 status = response.status
-                result = (url, status)
-
                 logging.info(f"Línea {line_number}: ✅ PETICIÓN: {url} | CÓDIGO: {status}")
                 print(f"Línea {line_number}: [OK] {url} -> {status}")
-
-                return result
-
+                return (line_number, url, status)
         except Exception as e:
-            logging.error(f"Línea {line_number}: Error ❌ {curl_command} -> {str(e)}")
-            print(f"Línea {line_number}: [ERROR] {curl_command} -> {e}")
-            return None
+            logging.error(f"Línea {line_number}: [ERROR] {url} -> {str(e)}")
+            print(f"Línea {line_number}: [ERROR] {url} -> {e}")
+            return (line_number, url, "ERROR")
 
-async def process_requests():
-    """Maneja las solicitudes concurrentes leyendo desde el CSV y guarda los resultados."""
+async def process_file(file_path):
+    """Procesa un archivo TXT de 8,000 registros."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        curl_commands = f.readlines()
+
     tasks = []
-    results = []
-    total_lines = 0
-
     async with aiohttp.ClientSession() as session:
-        with open(CSV_FILE_PATH, newline='', encoding="utf-8") as csvfile:
-            reader = csv.reader(csvfile)
-            next(reader)  # Saltar el encabezado
+        for i, curl_command in enumerate(curl_commands, start=1):
+            url = curl_command.split(" ")[4].strip("'")  # Extraer URL del cURL
+            tasks.append(fetch(session, url, i))
 
-            for line_number, row in enumerate(reader, start=1):
-                total_lines += 1
-                if not row or len(row) == 0:  # Evitar filas vacías
-                    continue
+        results = await asyncio.gather(*tasks)
 
-                curl_command = row[0].strip()  # Eliminar espacios en blanco extra
-                if curl_command:  # Validar que no sea una línea vacía
-                    task = fetch(session, curl_command, line_number)
-                    tasks.append(task)
+    # Guardar resultados en CSV
+    result_file = file_path.replace(".txt", "_resultados.csv")
+    pd.DataFrame(results, columns=["Línea", "URL", "Código"]).to_csv(result_file, index=False)
+    print(f"✅ Resultados guardados en: {result_file}")
 
-                if len(tasks) >= CONCURRENT_REQUESTS:
-                    results.extend(await asyncio.gather(*tasks))
-                    tasks = []
+async def process_batches():
+    """Procesa archivos en lotes de 2 en 2."""
+    for i in range(0, len(batch_files), 2):
+        batch = batch_files[i:i+2]  # Seleccionar 2 archivos a la vez
+        print(f"\n🚀 Procesando archivos: {batch}")
 
-        if tasks:
-            results.extend(await asyncio.gather(*tasks))
+        tasks = [process_file(file) for file in batch]
+        await asyncio.gather(*tasks)
 
-    # Guardar los resultados en un CSV
-    with open(RESULTS_CSV_PATH, mode="w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["URL", "Código de Respuesta"])  # Encabezados
-        writer.writerows(filter(None, results))  # Guardar solo respuestas válidas
+    print("\n✅ Todos los archivos han sido procesados.")
 
-    print(f"\n✅ Procesadas {total_lines} líneas del CSV")
-    print(f"✅ Resultados guardados en: {RESULTS_CSV_PATH}")
-    print(f"📝 Logs guardados en: {log_filename}")
+# Ejecutar el procesamiento en lotes
+asyncio.run(process_batches())
 
-# Ejecutar el script
-asyncio.run(process_requests())
+print("\n🚀 ¡Proceso completado automáticamente! 🚀")
